@@ -8,6 +8,7 @@ import android.graphics.Path;
 import android.graphics.Picture;
 import android.os.Bundle;
 import android.support.v7.app.ActionBarActivity;
+import android.util.Log;
 import android.view.Menu;
 import android.view.MenuItem;
 import android.view.View;
@@ -16,6 +17,18 @@ import android.widget.ImageView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import com.koushikdutta.async.ByteBufferList;
+import com.koushikdutta.async.DataEmitter;
+import com.koushikdutta.async.callback.DataCallback;
+import com.koushikdutta.async.future.Future;
+import com.koushikdutta.async.http.AsyncHttpClient;
+import com.koushikdutta.async.http.WebSocket;
+import com.koushikdutta.async.http.socketio.Acknowledge;
+import com.koushikdutta.async.http.socketio.ConnectCallback;
+import com.koushikdutta.async.http.socketio.EventCallback;
+import com.koushikdutta.async.http.socketio.JSONCallback;
+import com.koushikdutta.async.http.socketio.SocketIOClient;
+import com.koushikdutta.async.http.socketio.StringCallback;
 import com.larvalabs.svgandroid.SVG;
 import com.larvalabs.svgandroid.SVGParser;
 import com.loopj.android.http.AsyncHttpResponseHandler;
@@ -23,12 +36,20 @@ import com.loopj.android.http.JsonHttpResponseHandler;
 import com.loopj.android.http.RequestParams;
 
 import org.apache.http.Header;
+import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
+
+import java.util.Timer;
+import java.util.TimerTask;
 
 
 public class MainActivity extends ActionBarActivity {
 
+
+    public String TAG = "singingKettle";
+    public String URL = "wss://singingkettleserver.herokuapp.com/phoneWS";
+    public String ID = "jamyspex";
     private Button boilBut;
     private Button getStatusBut;
     private Paint kettleOutline;
@@ -40,6 +61,9 @@ public class MainActivity extends ActionBarActivity {
     private TextView waterLevelTV;
 
     private ImageView kettleModelImgView;
+
+    private WebSocket webSocket;
+    private Timer heartBeat;
 
     private RestClient http;
     private Canvas can;
@@ -83,31 +107,34 @@ public class MainActivity extends ActionBarActivity {
                         Toast.makeText(getApplicationContext(), "404 Kettle not found!", Toast.LENGTH_SHORT).show();
                     }
                 });
+
             }
         });
 
         getStatusBut.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                http.get("status", new RequestParams("id", "jamyspex"), new JsonHttpResponseHandler() {
-                    private int statusCode;
-                    private Header[] headers;
-                    private byte[] responseBody;
-                    private Throwable error;
 
-                    @Override
-                    public void onSuccess(int statusCode, Header[] headers, JSONObject response) {
-                        try {
-                            tempTV.setText("Temperature: " + response.getString("temperature"));
-                            waterLevelTV.setText("Water Level: " + response.getString("waterLevel"));
-                            powerStateTV.setText("Power State: " + response.getString("powerState"));
-                        } catch (JSONException e) {
-                            e.printStackTrace();
-                        }
-
-                    }
-
-                });
+//                webSocket.send("{\"type\":\"heartbeat\", \"id\":\"" + ID + "\"}");
+//                http.get("status", new RequestParams("id", "jamyspex"), new JsonHttpResponseHandler() {
+//                    private int statusCode;
+//                    private Header[] headers;
+//                    private byte[] responseBody;
+//                    private Throwable error;
+//
+//                    @Override
+//                    public void onSuccess(int statusCode, Header[] headers, JSONObject response) {
+//                        try {
+//                            tempTV.setText("Temperature: " + response.getString("temperature"));
+//                            waterLevelTV.setText("Water Level: " + response.getString("waterLevel"));
+//                            powerStateTV.setText("Power State: " + response.getString("powerState"));
+//                        } catch (JSONException e) {
+//                            e.printStackTrace();
+//                        }
+//
+//                    }
+//
+//                });
             }
         });
 
@@ -132,8 +159,99 @@ public class MainActivity extends ActionBarActivity {
             }
 
         });
+
+
+    }
+    @Override
+    protected void onStart() {
+        super.onStart();
+        initWebSocket();
     }
 
+    @Override
+    protected void onStop() {
+        super.onStop();
+        webSocket.close();
+        heartBeat.cancel();
+    }
+
+    public void initWebSocket()
+    {
+        AsyncHttpClient.getDefaultInstance().websocket(URL, "my-protocol", new AsyncHttpClient.WebSocketConnectCallback() {
+            @Override
+            public void onCompleted(Exception ex, WebSocket ws) {
+                if (ex != null) {
+                    ex.printStackTrace();
+                    return;
+                }
+
+                webSocket = ws;
+
+                JSONObject phoneConnect = new JSONObject();
+
+                try {
+                    phoneConnect.put("type", "phoneConnect");
+                    phoneConnect.put("id", ID);
+                } catch (JSONException e) {
+                    e.printStackTrace();
+                }
+
+
+                webSocket.send(phoneConnect.toString());
+
+                heartBeat = new Timer();
+                heartBeat.scheduleAtFixedRate(new TimerTask() {
+                    @Override
+                    public void run() {
+                        webSocket.send("{\"type\":\"heartbeat\", \"id\":\"" + ID + "\"}");
+                    }
+                }, 10000l, 10000l);
+
+                webSocket.setStringCallback(new WebSocket.StringCallback() {
+                    @Override
+                    public void onStringAvailable(String s) {
+                        Log.i(TAG, s);
+
+
+                        try {
+
+                            JSONObject incoming = new JSONObject(s);
+
+                            String type = incoming.getString("type");
+
+                            if(type.contains("waterLevel"))
+                            {
+                                waterLevelTV.setText(incoming.getString("waterLevel"));
+                            }
+                            else if(type.contains("temperature"))
+                            {
+                                tempTV.setText(incoming.getString("temperature"));
+                            }
+                            else if(type.contains("powerState"))
+                            {
+                                powerStateTV.setText(incoming.getString("powerState"));
+                            }
+
+                        } catch (JSONException e) {
+                            e.printStackTrace();
+                        }
+
+                    }
+                });
+
+                webSocket.setDataCallback(new DataCallback() {
+
+                    @Override
+                    public void onDataAvailable(DataEmitter emitter, ByteBufferList bb) {
+                        Log.i(TAG, "onDataAvailable");
+
+
+                        bb.recycle();
+                    }
+                });
+            }
+        });
+    }
 
     @Override
     public boolean onCreateOptionsMenu(Menu menu) {
